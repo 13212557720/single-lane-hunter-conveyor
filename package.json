@@ -1,0 +1,20 @@
+{
+  "name": "single-lane-hunter-conveyor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "assets:optimize": "node scripts/optimize-assets.mjs",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "smoke": "node scripts/smoke-test.mjs"
+  },
+  "dependencies": {
+    "phaser": "3.90.0"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vite": "^8.1.2"
+  }
+}
