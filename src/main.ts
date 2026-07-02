@@ -3,8 +3,12 @@ import "./style.css";
 
 const WIDTH = 1280;
 const HEIGHT = 720;
-const LANES = [300, 470, 640, 810, 980];
-const LANE_WIDTH = 142;
+const LANES = [390, 640, 890];
+const LANE_WIDTH = 180;
+const CENTER_LANE = Math.floor(LANES.length / 2);
+const LAST_LANE = LANES.length - 1;
+const LANE_FIELD_LEFT = LANES[0] - LANE_WIDTH / 2 - 24;
+const LANE_FIELD_WIDTH = LANES[LAST_LANE] - LANES[0] + LANE_WIDTH + 48;
 const PLAYER_Y = 558;
 const SPAWN_Y = -46;
 const ESCAPE_Y = 666;
@@ -169,15 +173,12 @@ type Recipe = {
   apply: () => void;
 };
 
-type SkillKey = "Q" | "W" | "E" | "R" | "F" | "G";
+type SkillKey = "Q" | "R";
+const ACTIVE_SKILLS: SkillKey[] = ["Q", "R"];
 
 const SKILL_ICON_ASSETS: Record<SkillKey, AssetId> = {
   Q: "SKILL_Q_001",
-  W: "SKILL_W_001",
-  E: "SKILL_E_001",
   R: "SKILL_R_001",
-  F: "SUM_001",
-  G: "SKILL_Q_005",
 };
 
 const ENEMY_VISUALS: Record<EnemyKind, EnemyVisual> = {
@@ -233,8 +234,12 @@ type DebugWindow = Window & {
     webpManifestReady: boolean;
     qCooldownRemaining: number;
     qCasts: number;
+    laneCount: number;
+    visibleSkills: SkillKey[];
+    isPaused: boolean;
   };
   __conveyorHunterDebugCastQ?: () => boolean;
+  __conveyorHunterDebugTogglePause?: () => boolean;
 };
 
 type PlayerState = {
@@ -340,7 +345,7 @@ class ConveyorHunterScene extends Phaser.Scene {
   private playerAura!: Phaser.GameObjects.Arc;
   private shieldImage!: Phaser.GameObjects.Image;
   private playerShadow!: Phaser.GameObjects.Ellipse;
-  private targetX = LANES[2];
+  private targetX = LANES[CENTER_LANE];
   private lastMoveDir = 1;
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
   private enemies: Enemy[] = [];
@@ -352,7 +357,7 @@ class ConveyorHunterScene extends Phaser.Scene {
   private autoReadyAt = 0;
   private crystalHp = 100;
   private maxCrystalHp = 100;
-  private runState: "playing" | "upgrade" | "won" | "lost" = "playing";
+  private runState: "playing" | "upgrade" | "paused" | "won" | "lost" = "playing";
   private finalCoreSpawned = false;
   private finalCoreKilled = false;
   private bossEnemy?: Enemy;
@@ -382,6 +387,8 @@ class ConveyorHunterScene extends Phaser.Scene {
   private skillTexts = new Map<SkillKey, Phaser.GameObjects.Text>();
   private skillIconImages = new Map<SkillKey, Phaser.GameObjects.Image>();
   private skillCooldownTexts = new Map<SkillKey, Phaser.GameObjects.Text>();
+  private pauseButtonLabel!: Phaser.GameObjects.Text;
+  private pausePanel?: Phaser.GameObjects.Container;
   private upgradePanel?: Phaser.GameObjects.Container;
   private resultPanel?: Phaser.GameObjects.Container;
   private recipes!: Recipe[];
@@ -428,11 +435,7 @@ class ConveyorHunterScene extends Phaser.Scene {
   };
   private skills: Record<SkillKey, SkillState> = {
     Q: { cd: 3.2, readyAt: 0, label: "穿云箭", color: 0x4bb7ff },
-    W: { cd: 9, readyAt: 0, label: "屏障", color: 0xf7cf4f },
-    E: { cd: 8, readyAt: 0, label: "横闪", color: 0x7de3ff },
     R: { cd: 28, readyAt: 0, label: "剑雨", color: 0xd76cff },
-    F: { cd: 25, readyAt: 0, label: "闪现", color: 0x8ef28e },
-    G: { cd: 20, readyAt: 0, label: "惩戒", color: 0xff7b54 },
   };
   private eventSchedule = [
     { time: 45, name: "超级炮车王", done: false },
@@ -461,9 +464,9 @@ class ConveyorHunterScene extends Phaser.Scene {
     this.setupInput();
     this.createRecipes();
     this.exposeDebugState();
-    this.spawnEnemy("melee", 2);
-    this.spawnEnemy("melee", 1);
-    this.spawnEnemy("chest", 3);
+    this.spawnEnemy("melee", CENTER_LANE);
+    this.spawnEnemy("melee", 0);
+    this.spawnEnemy("chest", LAST_LANE);
     this.showFloatingText(WIDTH / 2, 154, "单路猎人", "#f6d77a", 28, 1600);
   }
 
@@ -472,6 +475,13 @@ class ConveyorHunterScene extends Phaser.Scene {
     this.updateFps(dt);
     if (this.runState === "won" || this.runState === "lost") {
       this.updateEffects(dt);
+      return;
+    }
+
+    if (this.runState === "paused") {
+      this.drawLanes();
+      this.updateEffects(dt);
+      this.updateHud();
       return;
     }
 
@@ -514,10 +524,10 @@ class ConveyorHunterScene extends Phaser.Scene {
     bg.fillStyle(0x020617, 0.42);
     bg.fillRect(0, 0, WIDTH, 44);
     bg.fillStyle(0x020617, 0.42);
-    bg.fillRoundedRect(166, 30, 30, 642, 8);
-    bg.fillRoundedRect(1084, 30, 30, 642, 8);
+    bg.fillRoundedRect(LANE_FIELD_LEFT - 26, 30, 30, 642, 8);
+    bg.fillRoundedRect(LANE_FIELD_LEFT + LANE_FIELD_WIDTH - 4, 30, 30, 642, 8);
     bg.lineStyle(2, 0xf0c56a, 0.35);
-    bg.strokeRoundedRect(192, 50, 896, 604, 10);
+    bg.strokeRoundedRect(LANE_FIELD_LEFT, 50, LANE_FIELD_WIDTH, 604, 10);
     bg.setDepth(3);
 
     this.laneGraphics = this.add.graphics();
@@ -550,9 +560,9 @@ class ConveyorHunterScene extends Phaser.Scene {
     });
 
     this.laneGraphics.fillStyle(0x102a43, 0.68);
-    this.laneGraphics.fillRoundedRect(196, 546, 888, 108, 12);
+    this.laneGraphics.fillRoundedRect(LANE_FIELD_LEFT + 4, 546, LANE_FIELD_WIDTH - 8, 108, 12);
     this.laneGraphics.lineStyle(2, 0x60a5fa, 0.55);
-    this.laneGraphics.strokeRoundedRect(196, 546, 888, 108, 12);
+    this.laneGraphics.strokeRoundedRect(LANE_FIELD_LEFT + 4, 546, LANE_FIELD_WIDTH - 8, 108, 12);
   }
 
   private createPlayer() {
@@ -566,7 +576,7 @@ class ConveyorHunterScene extends Phaser.Scene {
       .setVisible(false);
     this.playerImage = this.add.image(0, -5, assetKey("CHAR_001")).setDisplaySize(98, 98);
     this.playerCore = this.add.circle(0, 0, 26, 0x38bdf8, 1).setVisible(false);
-    this.player = this.add.container(LANES[2], PLAYER_Y, [
+    this.player = this.add.container(LANES[CENTER_LANE], PLAYER_Y, [
       this.playerShadow,
       this.playerAura,
       this.shieldImage,
@@ -599,7 +609,7 @@ class ConveyorHunterScene extends Phaser.Scene {
       .setDepth(101);
 
     this.economyText = this.add
-      .text(WIDTH - 24, 10, "", {
+      .text(WIDTH - 92, 10, "", {
         fontFamily: "Arial, PingFang SC, sans-serif",
         fontSize: "16px",
         color: "#fde68a",
@@ -689,17 +699,35 @@ class ConveyorHunterScene extends Phaser.Scene {
       .setDepth(101);
     this.equipmentHud = this.add.container(WIDTH - 260, 622).setDepth(101);
 
+    this.createPauseButton();
     this.createSkillHud();
   }
 
+  private createPauseButton() {
+    const bg = this.add
+      .rectangle(WIDTH - 40, 20, 42, 30, 0x111827, 0.95)
+      .setStrokeStyle(1, 0xfef3c7, 0.72)
+      .setDepth(103)
+      .setInteractive({ useHandCursor: true });
+    this.pauseButtonLabel = this.add
+      .text(WIDTH - 40, 19, "Ⅱ", {
+        fontFamily: "Arial, PingFang SC, sans-serif",
+        fontSize: "18px",
+        color: "#fef3c7",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5)
+      .setDepth(104);
+    bg.on("pointerdown", () => this.togglePause());
+  }
+
   private createSkillHud() {
-    const keys: SkillKey[] = ["Q", "W", "E", "R", "F", "G"];
-    const start = WIDTH / 2 - 207;
-    keys.forEach((key, index) => {
+    const start = WIDTH / 2 - 41;
+    ACTIVE_SKILLS.forEach((key, index) => {
       const x = start + index * 82;
       const y = HEIGHT - 74;
       const state = this.skills[key];
-      const frameKey = key === "F" || key === "G" ? assetKey("UI_002") : assetKey("UI_001");
+      const frameKey = key === "R" ? assetKey("UI_002") : assetKey("UI_001");
       const box = this.add
         .image(x, y, frameKey)
         .setDisplaySize(key === "R" ? 68 : 60, key === "R" ? 68 : 60)
@@ -752,16 +780,15 @@ class ConveyorHunterScene extends Phaser.Scene {
       right: Phaser.Input.Keyboard.KeyCodes.D,
       right2: Phaser.Input.Keyboard.KeyCodes.RIGHT,
       q: Phaser.Input.Keyboard.KeyCodes.Q,
-      w: Phaser.Input.Keyboard.KeyCodes.W,
-      e: Phaser.Input.Keyboard.KeyCodes.E,
       r: Phaser.Input.Keyboard.KeyCodes.R,
-      f: Phaser.Input.Keyboard.KeyCodes.F,
-      g: Phaser.Input.Keyboard.KeyCodes.G,
       one: Phaser.Input.Keyboard.KeyCodes.ONE,
       two: Phaser.Input.Keyboard.KeyCodes.TWO,
       three: Phaser.Input.Keyboard.KeyCodes.THREE,
       restart: Phaser.Input.Keyboard.KeyCodes.SPACE,
     }) as Record<string, Phaser.Input.Keyboard.Key>;
+
+    this.input.keyboard.on("keydown-P", () => this.togglePause());
+    this.input.keyboard.on("keydown-ESC", () => this.togglePause());
 
     this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
       if (this.runState === "playing" && pointer.y > 80 && pointer.y < 650) {
@@ -787,12 +814,108 @@ class ConveyorHunterScene extends Phaser.Scene {
       webpManifestReady: Boolean(this.cache.json.get("p0_runtime_manifest")),
       qCooldownRemaining: Number(Math.max(0, this.skills.Q.readyAt - this.elapsed).toFixed(2)),
       qCasts: this.qCasts,
+      laneCount: LANES.length,
+      visibleSkills: [...ACTIVE_SKILLS],
+      isPaused: this.runState === "paused",
     });
     (window as DebugWindow).__conveyorHunterDebugCastQ = () => {
       const before = this.qCasts;
       this.castQ();
       return this.qCasts > before;
     };
+    (window as DebugWindow).__conveyorHunterDebugTogglePause = () => {
+      this.togglePause();
+      return this.runState === "paused";
+    };
+  }
+
+  private togglePause() {
+    if (this.runState === "playing") {
+      this.runState = "paused";
+      this.time.timeScale = 0;
+      this.tweens.pauseAll();
+      this.createPausePanel();
+      this.updatePauseButton();
+      return;
+    }
+
+    if (this.runState === "paused") {
+      this.runState = "playing";
+      this.time.timeScale = 1;
+      this.tweens.resumeAll();
+      this.pausePanel?.destroy(true);
+      this.pausePanel = undefined;
+      this.updatePauseButton();
+    }
+  }
+
+  private updatePauseButton() {
+    this.pauseButtonLabel?.setText(this.runState === "paused" ? "▶" : "Ⅱ");
+  }
+
+  private createPausePanel() {
+    this.pausePanel?.destroy(true);
+    const panelX = WIDTH / 2;
+    const panelY = 294;
+    const panel = this.add.rectangle(panelX, panelY, 660, 336, 0x0f172a, 0.96);
+    panel.setStrokeStyle(2, 0xfacc15, 0.78);
+    const title = this.add
+      .text(panelX, panelY - 138, "暂停", {
+        fontFamily: "Arial, PingFang SC, sans-serif",
+        fontSize: "30px",
+        color: "#fef3c7",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+
+    const equipment = this.equipment.length > 0 ? this.equipment.join(" / ") : "暂无";
+    const materials =
+      [...this.materials.entries()]
+        .filter(([, count]) => count > 0)
+        .slice(0, 10)
+        .map(([mat, count]) => `${mat}x${count}`)
+        .join("  ") || "暂无";
+    const progress = this.recipeProgressLines();
+    const body = this.add
+      .text(
+        panelX - 286,
+        panelY - 92,
+        `当前装备\n${equipment}\n\n材料\n${materials}\n\n接近合成\n${progress}`,
+        {
+          fontFamily: "Arial, PingFang SC, sans-serif",
+          fontSize: "17px",
+          color: "#e2e8f0",
+          lineSpacing: 8,
+          wordWrap: { width: 572 },
+        },
+      )
+      .setOrigin(0, 0);
+
+    this.pausePanel = this.add.container(0, 0, [panel, title, body]);
+    this.pausePanel.setDepth(220);
+  }
+
+  private recipeProgressLines() {
+    const candidates = this.recipes
+      .filter((recipe) => !this.equipment.includes(recipe.name))
+      .map((recipe) => {
+        const required = new Map<Material, number>();
+        recipe.needs.forEach((mat) => required.set(mat, (required.get(mat) ?? 0) + 1));
+        let have = 0;
+        let total = 0;
+        required.forEach((count, mat) => {
+          total += count;
+          have += Math.min(this.materials.get(mat) ?? 0, count);
+        });
+        return { recipe, have, total, missing: total - have };
+      })
+      .sort((a, b) => a.missing - b.missing || b.have - a.have || a.recipe.name.localeCompare(b.recipe.name));
+
+    if (candidates.length === 0) return "已集齐主要装备";
+    return candidates
+      .slice(0, 4)
+      .map(({ recipe, have, total, missing }) => `${recipe.name}  ${have}/${total}  缺${missing}`)
+      .join("\n");
   }
 
   private handleInput(dt: number) {
@@ -817,11 +940,7 @@ class ConveyorHunterScene extends Phaser.Scene {
     this.player.x = Phaser.Math.Linear(this.player.x, this.targetX, 0.36);
 
     if (Phaser.Input.Keyboard.JustDown(this.keys.q)) this.castQ();
-    if (Phaser.Input.Keyboard.JustDown(this.keys.w)) this.castW();
-    if (Phaser.Input.Keyboard.JustDown(this.keys.e)) this.castE();
     if (Phaser.Input.Keyboard.JustDown(this.keys.r)) this.castR();
-    if (Phaser.Input.Keyboard.JustDown(this.keys.f)) this.castF();
-    if (Phaser.Input.Keyboard.JustDown(this.keys.g)) this.castG();
     if (
       (this.runState === "won" || this.runState === "lost") &&
       Phaser.Input.Keyboard.JustDown(this.keys.restart)
@@ -949,19 +1068,19 @@ class ConveyorHunterScene extends Phaser.Scene {
     const waveSize = Phaser.Math.Between(1, this.elapsed > 190 ? 3 : this.elapsed > 90 ? 2 : 1);
 
     for (let i = 0; i < waveSize; i++) {
-      this.spawnEnemy(this.pickEnemyKind(), Phaser.Math.Between(0, 4));
+      this.spawnEnemy(this.pickEnemyKind(), this.randomLane());
     }
 
     if (Phaser.Math.FloatBetween(0, 1) < 0.08 + pressure * 0.08) {
-      this.spawnEnemy(this.elapsed > 120 ? "goldChest" : "chest", Phaser.Math.Between(0, 4));
+      this.spawnEnemy(this.elapsed > 120 ? "goldChest" : "chest", this.randomLane());
     }
 
     if (this.elapsed > 55 && Phaser.Math.FloatBetween(0, 1) < 0.05) {
-      this.spawnEnemy(Phaser.Math.FloatBetween(0, 1) > 0.5 ? "resourceRed" : "resourceBlue", Phaser.Math.Between(0, 4));
+      this.spawnEnemy(Phaser.Math.FloatBetween(0, 1) > 0.5 ? "resourceRed" : "resourceBlue", this.randomLane());
     }
 
     if (this.elapsed > 70 && Phaser.Math.FloatBetween(0, 1) < 0.035) {
-      this.spawnEnemy("vision", Phaser.Math.Between(0, 4));
+      this.spawnEnemy("vision", this.randomLane());
     }
   }
 
@@ -998,20 +1117,19 @@ class ConveyorHunterScene extends Phaser.Scene {
         : "#c4b5fd";
     this.showFloatingText(WIDTH / 2, 112, name, eventColor, 24, 1800);
     this.cameras.main.shake(220, 0.004);
-    if (name === "超级炮车王") this.spawnEnemy("super", 2);
-    if (name === "火焰龙") this.spawnEnemy("dragonFire", 2);
-    if (name === "冰霜龙") this.spawnEnemy("dragonIce", 2);
-    if (name === "大龙巨兽") this.spawnEnemy("baron", 2);
+    if (name === "超级炮车王") this.spawnEnemy("super", CENTER_LANE);
+    if (name === "火焰龙") this.spawnEnemy("dragonFire", CENTER_LANE);
+    if (name === "冰霜龙") this.spawnEnemy("dragonIce", CENTER_LANE);
+    if (name === "大龙巨兽") this.spawnEnemy("baron", CENTER_LANE);
     if (name === "敌方水晶核心") {
       this.finalCoreSpawned = true;
-      this.spawnEnemy("core", 2);
-      this.spawnEnemy("node", 1);
-      this.spawnEnemy("node", 2);
-      this.spawnEnemy("node", 3);
+      this.spawnEnemy("core", CENTER_LANE);
+      LANES.forEach((_, lane) => this.spawnEnemy("node", lane));
     }
   }
 
   private spawnEnemy(kind: EnemyKind, lane: number) {
+    lane = this.clampLane(lane);
     const spec = this.enemySpec(kind);
     const x = LANES[lane];
     const y = kind === "core" ? 112 : kind === "node" ? 154 : SPAWN_Y;
@@ -1078,8 +1196,9 @@ class ConveyorHunterScene extends Phaser.Scene {
   }
 
   private enemySpec(kind: EnemyKind) {
-    const scale = 1 + this.elapsed / 250;
-    const bossScale = 1 + Math.max(this.elapsed - 45, 0) / 420;
+    const pressure = Phaser.Math.Clamp(this.elapsed / DURATION, 0, 1);
+    const scale = 1 + 0.75 * pressure + 1.1 * pressure * pressure;
+    const bossScale = 1 + 0.45 * pressure + 0.95 * pressure * pressure;
     const common = {
       shield: 0,
       isBoss: false,
@@ -1095,7 +1214,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 28 * scale,
-          speed: 74 + this.elapsed * 0.045,
+          speed: 62 + this.elapsed * 0.03,
           damage: 1,
           gold: 4,
           xp: 6,
@@ -1108,7 +1227,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 24 * scale,
-          speed: 61,
+          speed: 52,
           damage: 1,
           gold: 5,
           xp: 7,
@@ -1122,7 +1241,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 94 * scale,
-          speed: 42,
+          speed: 36,
           damage: 5,
           gold: 18,
           xp: 18,
@@ -1137,7 +1256,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 430 * bossScale,
-          speed: 31,
+          speed: 26,
           damage: 12,
           gold: 80,
           xp: 80,
@@ -1153,7 +1272,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 56 * scale,
-          speed: 112,
+          speed: 88,
           damage: 9,
           gold: 10,
           xp: 13,
@@ -1168,7 +1287,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 52 * scale,
-          speed: 55,
+          speed: 47,
           damage: 8,
           gold: 11,
           xp: 15,
@@ -1183,7 +1302,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 48 * scale,
-          speed: 54,
+          speed: 45,
           damage: 1,
           gold: 12,
           xp: 16,
@@ -1198,7 +1317,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 66 * scale,
-          speed: 50,
+          speed: 42,
           damage: 2,
           gold: 13,
           xp: 18,
@@ -1213,7 +1332,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 42,
-          speed: 48,
+          speed: 40,
           damage: 0,
           gold: 20,
           xp: 8,
@@ -1229,7 +1348,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 76,
-          speed: 44,
+          speed: 37,
           damage: 0,
           gold: 42,
           xp: 18,
@@ -1246,7 +1365,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 110 * scale,
-          speed: 118,
+          speed: 92,
           damage: 12,
           gold: 65,
           xp: 30,
@@ -1261,7 +1380,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 130 * scale,
-          speed: 34,
+          speed: 28,
           damage: 3,
           gold: 24,
           xp: 24,
@@ -1277,7 +1396,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 120 * scale,
-          speed: 34,
+          speed: 28,
           damage: 3,
           gold: 24,
           xp: 24,
@@ -1293,7 +1412,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 62,
-          speed: 82,
+          speed: 66,
           damage: 0,
           gold: 12,
           xp: 12,
@@ -1309,7 +1428,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 650 * bossScale,
-          speed: 18,
+          speed: 15,
           damage: 16,
           gold: 120,
           xp: 105,
@@ -1326,7 +1445,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 790 * bossScale,
-          speed: 17,
+          speed: 14.5,
           damage: 16,
           gold: 130,
           xp: 120,
@@ -1343,7 +1462,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 820 * bossScale,
-          speed: 19,
+          speed: 16,
           damage: 18,
           gold: 140,
           xp: 130,
@@ -1359,7 +1478,7 @@ class ConveyorHunterScene extends Phaser.Scene {
         return {
           ...common,
           hp: 1120 * bossScale,
-          speed: 11,
+          speed: 9.5,
           damage: 24,
           gold: 180,
           xp: 180,
@@ -1375,7 +1494,7 @@ class ConveyorHunterScene extends Phaser.Scene {
       case "core":
         return {
           ...common,
-          hp: 1700 * bossScale,
+          hp: 2100 * bossScale,
           speed: 0,
           damage: 26,
           gold: 0,
@@ -1448,12 +1567,12 @@ class ConveyorHunterScene extends Phaser.Scene {
 
       if (enemy.kind === "summoner" && this.elapsed >= enemy.nextActionAt) {
         enemy.nextActionAt = this.elapsed + 4.5;
-        this.spawnEnemy("melee", Phaser.Math.Clamp(enemy.lane + Phaser.Math.Between(-1, 1), 0, 4));
+        this.spawnEnemy("melee", this.clampLane(enemy.lane + Phaser.Math.Between(-1, 1)));
         this.showFloatingText(enemy.x, enemy.y - 42, "召唤", "#a5f3fc", 14, 650);
       }
 
       if (enemy.kind === "assassin" && enemy.y > 430 && Math.abs(enemy.x - this.player.x) < 120) {
-        enemy.y += 210 * dt;
+        enemy.y += 155 * dt;
       }
 
       if ((enemy.isBoss || enemy.kind === "node") && this.elapsed >= enemy.nextActionAt) {
@@ -1483,10 +1602,10 @@ class ConveyorHunterScene extends Phaser.Scene {
   private bossAction(enemy: Enemy) {
     if (enemy.kind === "core") {
       enemy.nextActionAt = this.elapsed + 2.8;
-      const lane = Phaser.Math.Between(0, 4);
+      const lane = this.randomLane();
       this.createLaneWarning(lane, 76, 562, 0.95, 18);
       if (Phaser.Math.FloatBetween(0, 1) < 0.48) {
-        this.spawnEnemy(this.elapsed > 285 ? "cannon" : "ranged", Phaser.Math.Between(0, 4));
+        this.spawnEnemy(this.elapsed > 285 ? "cannon" : "ranged", this.randomLane());
       }
       return;
     }
@@ -1502,12 +1621,12 @@ class ConveyorHunterScene extends Phaser.Scene {
     }
 
     enemy.nextActionAt = this.elapsed + Phaser.Math.FloatBetween(3.1, 4.8);
-    const sweepCenter = Phaser.Math.Clamp(enemy.lane + Phaser.Math.Between(-1, 1), 0, 4);
-    const lanes = new Set([sweepCenter, Phaser.Math.Clamp(sweepCenter + Phaser.Math.Between(-1, 1), 0, 4)]);
+    const sweepCenter = this.clampLane(enemy.lane + Phaser.Math.Between(-1, 1));
+    const lanes = new Set([sweepCenter, this.clampLane(sweepCenter + Phaser.Math.Between(-1, 1))]);
     lanes.forEach((lane) => this.createLaneWarning(lane, 350, 248, 1.1, enemy.damage));
 
     if (Phaser.Math.FloatBetween(0, 1) < 0.35) {
-      this.spawnEnemy(this.elapsed > 180 ? "cannon" : "melee", Phaser.Math.Between(0, 4));
+      this.spawnEnemy(this.elapsed > 180 ? "cannon" : "melee", this.randomLane());
     }
   }
 
@@ -1670,44 +1789,6 @@ class ConveyorHunterScene extends Phaser.Scene {
     this.flashLane(lane, 0x38bdf8);
   }
 
-  private castW() {
-    if (!this.skillReady("W")) return;
-    this.markSkillUsed("W");
-    this.setPlayerPose("attack", 220);
-    const shield = 38 + this.playerState.abilityPower * 0.52 + this.playerState.maxHp * 0.08;
-    this.playerState.shield += shield;
-    this.playerState.hasteUntil = this.elapsed + 5;
-    this.showFloatingText(this.player.x, PLAYER_Y - 54, `护盾 +${Math.round(shield)}`, "#fde68a", 16, 780);
-    this.playerAura.setFillStyle(0xfacc15, 0.16);
-    this.shieldImage.setVisible(true).setAlpha(0.8);
-    this.time.delayedCall(360, () => {
-      this.playerAura.setFillStyle(0x67e8f9, 0.12);
-      if (this.playerState.shield <= 0) this.shieldImage.setVisible(false).setAlpha(0);
-    });
-    this.playerState.empowered = this.equipment.includes("三相核心型");
-  }
-
-  private castE() {
-    if (!this.skillReady("E")) return;
-    this.markSkillUsed("E");
-    this.setPlayerPose("dash", 280);
-    const currentLane = this.nearestLane(this.player.x);
-    const nextLane = Phaser.Math.Clamp(currentLane + this.lastMoveDir, 0, 4);
-    this.player.x = LANES[nextLane];
-    this.targetX = LANES[nextLane];
-    this.playerState.invulnerableUntil = this.elapsed + 0.7;
-    this.flashLane(nextLane, 0x7dd3fc);
-    this.showFloatingText(this.player.x, PLAYER_Y - 54, "横闪", "#bae6fd", 16, 620);
-
-    this.enemies.forEach((enemy) => {
-      if (Math.abs(enemy.x - this.player.x) < 120 && Math.abs(enemy.y - PLAYER_Y) < 160) {
-        enemy.y -= 60;
-        enemy.status.set("slow", this.elapsed + 1.4);
-      }
-    });
-    this.playerState.empowered = this.equipment.includes("三相核心型");
-  }
-
   private castR() {
     if (!this.skillReady("R")) return;
     this.markSkillUsed("R");
@@ -1728,31 +1809,6 @@ class ConveyorHunterScene extends Phaser.Scene {
       });
     });
     this.playerState.empowered = this.equipment.includes("三相核心型");
-  }
-
-  private castF() {
-    if (!this.skillReady("F")) return;
-    this.markSkillUsed("F");
-    this.setPlayerPose("dash", 260);
-    const lane = this.nearestLane(this.player.x);
-    const dest = Phaser.Math.Clamp(lane + this.lastMoveDir * 2, 0, 4);
-    this.player.x = LANES[dest];
-    this.targetX = LANES[dest];
-    this.playerState.invulnerableUntil = this.elapsed + 0.45;
-    this.flashLane(dest, 0x86efac);
-  }
-
-  private castG() {
-    if (!this.skillReady("G")) return;
-    this.markSkillUsed("G");
-    this.setPlayerPose("attack", 220);
-    const boss = this.enemies
-      .filter((enemy) => enemy.isBoss || enemy.isResource || enemy.kind === "node")
-      .sort((a, b) => b.priority - a.priority || a.hp - b.hp)[0];
-    const target = boss ?? this.pickTarget();
-    if (!target) return;
-    this.createStrike(target.x, target.y, 0xfb923c);
-    this.damageEnemy(target, target.isBoss ? 210 + this.playerState.abilityPower * 0.5 : 130, "smite");
   }
 
   private skillReady(key: SkillKey) {
@@ -1859,7 +1915,7 @@ class ConveyorHunterScene extends Phaser.Scene {
   private killEnemy(enemy: Enemy, playerKill: boolean, kind: ProjectileKind = "auto") {
     if (!playerKill) return;
     const perfect = enemy.hp <= 0 && enemy.hp + this.playerState.attackDamage * 1.25 >= 0 && kind === "auto";
-    const goldBonus = perfect ? 1 + this.playerState.comboGoldBonus : 0.55;
+    const goldBonus = enemy.isBoss ? (perfect ? 1 + this.playerState.comboGoldBonus : 1) : perfect ? 1 + this.playerState.comboGoldBonus : 0.55;
     const gainedGold = Math.round(enemy.gold * goldBonus);
     this.playerState.gold += gainedGold;
     this.playerState.xp += enemy.xp;
@@ -1872,9 +1928,45 @@ class ConveyorHunterScene extends Phaser.Scene {
 
     this.showFloatingText(enemy.x, enemy.y - enemy.radius - 12, perfect ? `补刀 +${gainedGold}` : `+${gainedGold}`, perfect ? "#facc15" : "#fde68a", perfect ? 17 : 14, 760);
     this.rollDrop(enemy);
+    this.celebrateMajorKill(enemy, gainedGold);
     this.handleSpecialKill(enemy);
     this.tryLevelUp();
     this.tryCraftEquipment();
+  }
+
+  private celebrateMajorKill(enemy: Enemy, gainedGold: number) {
+    const isDragon = enemy.kind === "dragonFire" || enemy.kind === "dragonIce" || enemy.kind === "dragonStorm";
+    const isSuper = enemy.kind === "super";
+    const isBaron = enemy.kind === "baron";
+    const isCore = enemy.kind === "core";
+    if (!isSuper && !isDragon && !isBaron && !isCore) return;
+
+    const config = isBaron
+      ? { shakeMs: 560, intensity: 0.014, extraGold: 160, materials: 4, coins: 18, flash: true, size: 176 }
+      : isDragon
+        ? { shakeMs: 420, intensity: 0.01, extraGold: 90, materials: 3, coins: 14, flash: true, size: 148 }
+        : isCore
+          ? { shakeMs: 620, intensity: 0.016, extraGold: 260, materials: 0, coins: 22, flash: true, size: 210 }
+          : { shakeMs: 320, intensity: 0.008, extraGold: 60, materials: 1, coins: 10, flash: false, size: 118 };
+
+    this.cameras.main.shake(config.shakeMs, config.intensity);
+    if (config.flash) this.cameras.main.flash(220, 255, 244, 180, false);
+    this.createBurst(enemy.x, enemy.y, config.size);
+    if (isDragon || isBaron || isCore) {
+      this.time.delayedCall(90, () => this.createBurst(enemy.x, enemy.y, config.size * 0.72));
+    }
+    this.createGoldBurst(enemy.x, enemy.y, config.coins);
+
+    if (config.extraGold > 0) {
+      this.playerState.gold += config.extraGold;
+      this.showFloatingText(enemy.x, enemy.y - enemy.radius - 44, `爆钱 +${config.extraGold}`, "#facc15", isCore ? 24 : 20, 1100);
+    } else if (gainedGold > 0) {
+      this.showFloatingText(enemy.x, enemy.y - enemy.radius - 44, `金币 +${gainedGold}`, "#facc15", 19, 1000);
+    }
+
+    for (let i = 0; i < config.materials; i += 1) {
+      this.addMaterial(this.randomMaterial(), enemy.x, enemy.y + Phaser.Math.Between(-16, 16));
+    }
   }
 
   private rollDrop(enemy: Enemy) {
@@ -1898,7 +1990,7 @@ class ConveyorHunterScene extends Phaser.Scene {
       for (let i = 0; i < count; i++) this.addMaterial(this.randomMaterial());
     }
 
-    if (enemy.kind === "goldChest" && Phaser.Math.FloatBetween(0, 1) < 0.28) {
+    if (enemy.kind === "goldChest" && Phaser.Math.FloatBetween(0, 1) < 0.12) {
       this.openUpgradeChoice();
     } else if (enemy.kind === "chest" && Phaser.Math.FloatBetween(0, 1) < 0.12) {
       this.spawnEnemy("mimic", enemy.lane);
@@ -1941,9 +2033,9 @@ class ConveyorHunterScene extends Phaser.Scene {
     }
   }
 
-  private addMaterial(material: Material) {
+  private addMaterial(material: Material, x = this.player.x, y = PLAYER_Y - 84) {
     this.materials.set(material, (this.materials.get(material) ?? 0) + 1);
-    this.showFloatingText(this.player.x, PLAYER_Y - 84, material, "#c4b5fd", 13, 720);
+    this.showFloatingText(x, y, material, "#c4b5fd", 13, 720);
   }
 
   private tryCraftEquipment() {
@@ -1997,7 +2089,7 @@ class ConveyorHunterScene extends Phaser.Scene {
   }
 
   private xpNeeded() {
-    return 42 + (this.playerState.level - 1) * 18;
+    return 80 + (this.playerState.level - 1) * 32;
   }
 
   private openUpgradeChoice() {
@@ -2155,7 +2247,7 @@ class ConveyorHunterScene extends Phaser.Scene {
       {
         title: "冷却齿轮",
         rarity: "稀有",
-        description: "冷却缩减 +10%，Q/W/E/R 更快轮转。",
+        description: "冷却缩减 +10%，Q 与 R 更快轮转。",
         apply: () => {
           this.playerState.cdr += 0.1;
         },
@@ -2346,6 +2438,29 @@ class ConveyorHunterScene extends Phaser.Scene {
     });
   }
 
+  private createGoldBurst(x: number, y: number, count: number) {
+    for (let i = 0; i < count; i += 1) {
+      const angle = (Math.PI * 2 * i) / count + Phaser.Math.FloatBetween(-0.22, 0.22);
+      const distance = Phaser.Math.Between(58, 132);
+      const coin = this.add
+        .image(x, y, assetKey("PICKUP_001"))
+        .setDisplaySize(24, 24)
+        .setTint(0xfacc15)
+        .setDepth(62)
+        .setAlpha(0.95);
+      this.tweens.add({
+        targets: coin,
+        x: x + Math.cos(angle) * distance,
+        y: y + Math.sin(angle) * distance + Phaser.Math.Between(-18, 26),
+        alpha: 0,
+        scale: 0.45,
+        duration: Phaser.Math.Between(520, 760),
+        ease: "Cubic.easeOut",
+        onComplete: () => coin.destroy(),
+      });
+    }
+  }
+
   private showFloatingText(x: number, y: number, text: string, color: string, size = 15, duration = 720) {
     const label = this.add
       .text(x, y, text, {
@@ -2385,6 +2500,7 @@ class ConveyorHunterScene extends Phaser.Scene {
   }
 
   private updateHud() {
+    this.updatePauseButton();
     const hp = Math.max(0, Math.round(this.playerState.hp));
     const shield = Math.round(this.playerState.shield);
     this.playerHpText.setText(`生命 ${hp}/${Math.round(this.playerState.maxHp)}  护盾 ${shield}  Lv.${this.playerState.level}`);
@@ -2593,6 +2709,14 @@ class ConveyorHunterScene extends Phaser.Scene {
       }
     });
     return best;
+  }
+
+  private randomLane() {
+    return Phaser.Math.Between(0, LAST_LANE);
+  }
+
+  private clampLane(lane: number) {
+    return Phaser.Math.Clamp(lane, 0, LAST_LANE);
   }
 
   private distance(x1: number, y1: number, x2: number, y2: number) {

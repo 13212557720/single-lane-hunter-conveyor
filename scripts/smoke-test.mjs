@@ -85,6 +85,13 @@ try {
   const qTriggered = await evaluate(client, "window.__conveyorHunterDebugCastQ?.() ?? false");
   await delay(900);
 
+  const afterAction = await evaluate(client, debugExpression());
+  const pauseEntered = await evaluate(client, "window.__conveyorHunterDebugTogglePause?.() ?? false");
+  const pausedBefore = await evaluate(client, debugExpression());
+  await delay(850);
+  const pausedAfter = await evaluate(client, debugExpression());
+  await evaluate(client, "window.__conveyorHunterDebugTogglePause?.() ?? false");
+  await delay(650);
   const after = await evaluate(client, debugExpression());
   const screenshot = await client.send("Page.captureScreenshot", {
     format: "png",
@@ -104,10 +111,23 @@ try {
   if ((after.loadedAssets ?? 0) < (after.expectedAssets ?? 1)) {
     failures.push(`not all runtime assets loaded: ${after.loadedAssets}/${after.expectedAssets}`);
   }
+  if ((after.laneCount ?? 0) !== 3) failures.push(`expected 3 lanes, got ${after.laneCount}`);
+  if (!Array.isArray(after.visibleSkills) || after.visibleSkills.join(",") !== "Q,R") {
+    failures.push(`visible skills mismatch: ${after.visibleSkills}`);
+  }
   if ((after.fps ?? 0) < 30) failures.push(`fps below threshold: ${after.fps}`);
-  if (!qTriggered || (after.qCasts ?? 0) <= (before.qCasts ?? 0)) failures.push("Q skill did not fire");
-  if ((after.qCooldownRemaining ?? 0) <= 0) failures.push("Q skill did not enter cooldown");
-  if (Math.abs((after.playerX ?? 0) - (before.playerX ?? 0)) < 8) {
+  if (!qTriggered || (afterAction.qCasts ?? 0) <= (before.qCasts ?? 0)) failures.push("Q skill did not fire");
+  if ((afterAction.qCooldownRemaining ?? 0) <= 0) failures.push("Q skill did not enter cooldown");
+  if (!pauseEntered || !pausedBefore.isPaused || !pausedAfter.isPaused) {
+    failures.push("pause state did not activate");
+  }
+  if (Math.abs((pausedAfter.elapsed ?? 0) - (pausedBefore.elapsed ?? 0)) > 0.05) {
+    failures.push(`elapsed advanced while paused: ${pausedBefore.elapsed} -> ${pausedAfter.elapsed}`);
+  }
+  if ((after.elapsed ?? 0) <= (pausedAfter.elapsed ?? 0) + 0.25) {
+    failures.push("game clock did not resume after pause");
+  }
+  if (Math.abs((afterAction.playerX ?? 0) - (before.playerX ?? 0)) < 8) {
     failures.push("keyboard movement did not change player position");
   }
   if ((after.canvasStats?.stddev ?? 0) < 4) failures.push("canvas appears blank");
@@ -118,7 +138,11 @@ try {
     screenshotPath,
     webpCheck,
     qTriggered,
+    pauseEntered,
     before,
+    afterAction,
+    pausedBefore,
+    pausedAfter,
     after,
     warnings: browserMessages.filter((entry) => entry.level !== "error"),
     errors,
