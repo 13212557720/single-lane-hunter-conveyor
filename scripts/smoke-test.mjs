@@ -133,6 +133,8 @@ try {
   await removeProfile(tmpProfile);
 }
 
+process.exit(process.exitCode ?? 0);
+
 async function waitForPageTarget(cdpPort) {
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
@@ -175,12 +177,21 @@ async function connectCdp(wsUrl) {
       const commandId = ++id;
       socket.send(JSON.stringify({ id: commandId, method, params }));
       return new Promise((resolve, reject) => {
-        pending.set(commandId, { resolve, reject });
-        setTimeout(() => {
+        const timer = setTimeout(() => {
           if (!pending.has(commandId)) return;
           pending.delete(commandId);
           reject(new Error(`CDP command timed out: ${method}`));
         }, 15000);
+        pending.set(commandId, {
+          resolve: (value) => {
+            clearTimeout(timer);
+            resolve(value);
+          },
+          reject: (error) => {
+            clearTimeout(timer);
+            reject(error);
+          },
+        });
       });
     },
     on(method, handler) {
@@ -211,7 +222,7 @@ async function connectCdp(wsUrl) {
 }
 
 async function checkWebpAssets(pageUrl) {
-  const manifestUrl = new URL("/assets/p0-runtime/manifest.json", pageUrl).href;
+  const manifestUrl = new URL("assets/p0-runtime/manifest.json", pageUrl).href;
   const manifestResponse = await fetch(manifestUrl);
   if (!manifestResponse.ok) {
     return {
@@ -224,7 +235,7 @@ async function checkWebpAssets(pageUrl) {
   const failures = [];
   await Promise.all(
     manifest.assets.map(async (asset) => {
-      const assetUrl = new URL(asset.url, pageUrl).href;
+      const assetUrl = new URL(asset.url.replace(/^\/+/, ""), pageUrl).href;
       const response = await fetch(assetUrl);
       if (!response.ok) failures.push({ url: assetUrl, status: response.status });
     }),
@@ -332,23 +343,12 @@ function delay(ms) {
 
 async function stopChrome(process) {
   if (process.exitCode !== null) return;
-  const gracefulExit = waitForProcessExit(process, 1800).catch(() => false);
   process.kill("SIGTERM");
-  const exited = await gracefulExit;
-  if (exited) return;
-  const forcedExit = waitForProcessExit(process, 1800).catch(() => false);
-  process.kill("SIGKILL");
-  await forcedExit;
-}
-
-function waitForProcessExit(process, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Chrome did not exit in time")), timeoutMs);
-    process.once("exit", () => {
-      clearTimeout(timer);
-      resolve(true);
-    });
-  });
+  await delay(800);
+  if (process.exitCode === null) {
+    process.kill("SIGKILL");
+    await delay(300);
+  }
 }
 
 async function removeProfile(path) {
