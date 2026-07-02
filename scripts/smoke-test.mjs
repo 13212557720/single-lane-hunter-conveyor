@@ -61,7 +61,7 @@ try {
   const loaded = client.waitForEvent("Page.loadEventFired", 12000);
   await client.send("Page.navigate", { url });
   await loaded;
-  await delay(3200);
+  await waitForGameReady(client, 24000);
 
   const before = await evaluate(client, debugExpression());
   const webpCheck = await checkWebpAssets(url);
@@ -102,7 +102,7 @@ try {
   const errors = browserMessages.filter((entry) => entry.level === "error");
   const failures = [];
   if (!before.canvas) failures.push("canvas was not created");
-  if ((after.elapsed ?? 0) < 3) failures.push("game clock did not advance");
+  if ((after.elapsed ?? 0) <= (before.elapsed ?? 0) + 1.5) failures.push("game clock did not advance");
   if ((after.enemies ?? 0) < 1) failures.push("director did not spawn enemies");
   if (webpCheck.failures.length > 0) {
     failures.push(`webp resources failed: ${webpCheck.failures.length}`);
@@ -281,6 +281,28 @@ async function pressKey(client, key, code, keyCode, type, text) {
     windowsVirtualKeyCode: keyCode,
     nativeVirtualKeyCode: keyCode,
   });
+}
+
+async function waitForGameReady(client, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastState = null;
+  while (Date.now() < deadline) {
+    try {
+      const state = await evaluate(client, debugExpression());
+      lastState = state;
+      const assetsReady =
+        state?.webpManifestReady &&
+        Number.isFinite(state.loadedAssets) &&
+        state.loadedAssets >= state.expectedAssets;
+      const canvasReady = (state?.canvasStats?.stddev ?? 0) >= 4;
+      const clockReady = (state?.elapsed ?? 0) > 0.2;
+      if (assetsReady && canvasReady && clockReady) return state;
+    } catch {
+      // The page may still be booting.
+    }
+    await delay(250);
+  }
+  throw new Error(`Game did not become ready within ${timeoutMs}ms: ${JSON.stringify(lastState)}`);
 }
 
 
